@@ -28,5 +28,8 @@ fi
 
 chown -R postgres:postgres "$PGDATA"
 
+# PostgreSQL refuses to start if the data directory is group/world accessible.
+chmod 0700 "$PGDATA"
+
 echo "[standby] Starting as hot standby..."
 exec su-exec postgres postgres -c listen_addresses='*' -c hot_standby=on
