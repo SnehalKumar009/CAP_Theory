@@ -4,10 +4,11 @@
 #   pg-standby  : PostgreSQL synchronous standby (must ACK every commit)
 #   app         : Spring Boot service (writes go to primary)
 #
-# Sync replication is enabled via bitnami env vars, which under the hood set
-# native PostgreSQL:  synchronous_commit=on  and  synchronous_standby_names.
-# With 1 required synchronous replica, a commit on the primary BLOCKS until the
-# standby acknowledges the WAL. Take the standby down => writes block (CP).
+# Uses the official postgres:16-alpine image with NATIVE streaming replication
+# configured by hand (no vendor helper scripts).
+# With synchronous_commit=on and one required sync standby ('standby1'), a commit
+# on the primary BLOCKS until the standby ACKs the WAL. Take the standby down =>
+# writes block (Consistency over Availability).
 # =====================================================================
 
 services:
@@ -17,23 +18,20 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRESQL_REPLICATION_MODE: master
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_password
-      POSTGRESQL_USERNAME: app_user
-      POSTGRESQL_PASSWORD: app_password
-      POSTGRESQL_DATABASE: appdb
-      POSTGRESQL_POSTGRES_PASSWORD: admin_password
-      # --- synchronous replication ---
-      POSTGRESQL_SYNCHRONOUS_COMMIT_MODE: "on"
-      POSTGRESQL_NUM_SYNCHRONOUS_REPLICAS: "1"
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+      POSTGRES_DB: appdb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     volumes:
-      - primary_data:/bitnami/postgresql
+      - ./postgres/primary/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/primary/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/primary/init:/docker-entrypoint-initdb.d:ro
+      - primary_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1 -p 5432"]
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
     networks:
       - syncrepl-net
 
@@ -45,23 +43,15 @@ services:
     depends_on:
       pg-primary:
         condition: service_healthy
-    environment:
-      POSTGRESQL_REPLICATION_MODE: slave
-      POSTGRESQL_REPLICATION_USER: repl_user
-      POSTGRESQL_REPLICATION_PASSWORD: repl_password
-      POSTGRESQL_MASTER_HOST: pg-primary
-      POSTGRESQL_MASTER_PORT_NUMBER: "5432"
-      POSTGRESQL_USERNAME: app_user
-      POSTGRESQL_PASSWORD: app_password
-      POSTGRESQL_DATABASE: appdb
-      POSTGRESQL_POSTGRES_PASSWORD: admin_password
+    entrypoint: ["/bin/sh", "/standby-entrypoint.sh"]
     volumes:
-      - standby_data:/bitnami/postgresql
+      - ./postgres/standby/standby-entrypoint.sh:/standby-entrypoint.sh:ro
+      - standby_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1 -p 5432"]
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
     networks:
       - syncrepl-net
 
