@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: multi-leader-poc
+
+app:
+  datasource:
+    a:
+      url: ${APP_DATASOURCE_A_URL:jdbc:postgresql://localhost:5462/appdb}
+      username: ${APP_DATASOURCE_A_USERNAME:app_user}
+      password: ${APP_DATASOURCE_A_PASSWORD:app_password}
+    b:
+      url: ${APP_DATASOURCE_B_URL:jdbc:postgresql://localhost:5463/appdb}
+      username: ${APP_DATASOURCE_B_USERNAME:app_user}
+      password: ${APP_DATASOURCE_B_PASSWORD:app_password}
+
+server:
+  port: 4000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

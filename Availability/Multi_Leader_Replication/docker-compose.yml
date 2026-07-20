@@ -1,0 +1,107 @@
+# =====================================================================
+# Multi-Leader (Master-Master) Replication CAP POC
+#   mlg-node-a : full read-write PostgreSQL leader (odd ids)
+#   mlg-node-b : full read-write PostgreSQL leader (even ids)
+#   mlg-init   : one-shot; creates the two subscriptions (bidirectional)
+#   app        : Spring Boot service; can write to EITHER leader
+#
+# Uses NATIVE logical replication (pub/sub, PG16) with origin=none to avoid loops.
+# Both nodes accept writes => highly available under partition, but the same data
+# updated on both sides CONFLICTS => divergence / replication halt (AP trade-off).
+#
+# Distinct names/ports/network from the other POCs so all can run at once.
+# =====================================================================
+
+services:
+  mlg-node-a:
+    image: postgres:16-alpine
+    container_name: mlg-node-a
+    ports:
+      - "5462:5432"
+    environment:
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+      POSTGRES_DB: appdb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./postgres/common/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/common/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/node-a/init:/docker-entrypoint-initdb.d:ro
+      - mlnode_a_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - multi-net
+
+  mlg-node-b:
+    image: postgres:16-alpine
+    container_name: mlg-node-b
+    ports:
+      - "5463:5432"
+    environment:
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+      POSTGRES_DB: appdb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./postgres/common/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/common/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/node-b/init:/docker-entrypoint-initdb.d:ro
+      - mlnode_b_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - multi-net
+
+  mlg-init:
+    image: postgres:16-alpine
+    container_name: mlg-init
+    depends_on:
+      mlg-node-a:
+        condition: service_healthy
+      mlg-node-b:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/create-subscriptions.sh"]
+    volumes:
+      - ./postgres/setup/create-subscriptions.sh:/create-subscriptions.sh:ro
+    restart: "no"
+    networks:
+      - multi-net
+
+  app:
+    build:
+      context: ./app
+      network: host
+    container_name: multi-app
+    ports:
+      - "4003:4000"
+    depends_on:
+      mlg-node-a:
+        condition: service_healthy
+      mlg-node-b:
+        condition: service_healthy
+      mlg-init:
+        condition: service_completed_successfully
+    environment:
+      APP_DATASOURCE_A_URL: jdbc:postgresql://mlg-node-a:5432/appdb
+      APP_DATASOURCE_A_USERNAME: app_user
+      APP_DATASOURCE_A_PASSWORD: app_password
+      APP_DATASOURCE_B_URL: jdbc:postgresql://mlg-node-b:5432/appdb
+      APP_DATASOURCE_B_USERNAME: app_user
+      APP_DATASOURCE_B_PASSWORD: app_password
+    networks:
+      - multi-net
+
+volumes:
+  mlnode_a_data:
+  mlnode_b_data:
+
+networks:
+  multi-net:
+    name: multi-net
