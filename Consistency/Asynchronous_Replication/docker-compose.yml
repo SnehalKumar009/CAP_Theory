@@ -1,0 +1,88 @@
+# =====================================================================
+# Asynchronous Replication CAP POC
+#   apg-primary : PostgreSQL master (accepts writes, does NOT wait for standby)
+#   apg-standby : PostgreSQL asynchronous standby (streams WAL in background)
+#   app         : Spring Boot service (writes go to primary)
+#
+# Uses postgres:16-alpine with NATIVE streaming replication, but with NO
+# synchronous_standby_names => ASYNCHRONOUS. A commit returns as soon as the
+# primary flushes its own WAL. Take the standby down => writes STILL SUCCEED
+# (Availability kept), but the standby falls behind (Consistency relaxed;
+# un-replicated writes are lost if the primary dies before catch-up).
+#
+# Distinct container names / host ports / network from the sync POC so BOTH can
+# run at the same time.
+# =====================================================================
+
+services:
+  apg-primary:
+    image: postgres:16-alpine
+    container_name: apg-primary
+    ports:
+      - "5442:5432"
+    environment:
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+      POSTGRES_DB: appdb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./postgres/primary/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/primary/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/primary/init:/docker-entrypoint-initdb.d:ro
+      - aprimary_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - async-net
+
+  apg-standby:
+    image: postgres:16-alpine
+    container_name: apg-standby
+    ports:
+      - "5443:5432"
+    depends_on:
+      apg-primary:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/standby-entrypoint.sh"]
+    volumes:
+      - ./postgres/standby/standby-entrypoint.sh:/standby-entrypoint.sh:ro
+      - astandby_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - async-net
+
+  app:
+    build:
+      context: ./app
+      # Build with host networking so Maven can reach the internet even when the
+      # default build bridge network cannot.
+      network: host
+    container_name: async-app
+    ports:
+      - "4001:4000"
+    depends_on:
+      apg-primary:
+        condition: service_healthy
+      apg-standby:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://apg-primary:5432/appdb
+      SPRING_DATASOURCE_USERNAME: app_user
+      SPRING_DATASOURCE_PASSWORD: app_password
+    networks:
+      - async-net
+
+volumes:
+  aprimary_data:
+  astandby_data:
+
+networks:
+  async-net:
+    name: async-net
