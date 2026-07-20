@@ -6,7 +6,7 @@ CAP trade-off: **when the standby is unreachable, writes keep SUCCEEDING on the 
 (Availability preserved), but the standby falls behind and un-replicated writes can be
 lost on failover (Consistency relaxed).**
 
-Compare with `../Synchronous_Replication` (the CP demo where writes block instead).
+Compare with `../../Consistency/Synchronous_Replication` (the CP demo where writes block instead).
 
 ## The only real difference from the sync POC
 `synchronous_standby_names` is **left empty**. With no named synchronous standby, a
@@ -25,7 +25,7 @@ Distinct names/ports/network from the sync POC, so both can run at once.
 
 ## Quick start
 ```bash
-cd Consistency/Asynchronous_Replication
+cd Availability/Asynchronous_Replication
 docker compose up --build -d
 docker compose ps
 ```
