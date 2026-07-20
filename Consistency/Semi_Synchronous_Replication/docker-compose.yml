@@ -1,0 +1,116 @@
+# =====================================================================
+# Semi-Synchronous Replication CAP POC
+#   spg-primary  : PostgreSQL master
+#   spg-standby1 : sync-candidate standby (application_name=standby1)
+#   spg-standby2 : sync-candidate standby (application_name=standby2)
+#   app          : Spring Boot service (writes go to primary)
+#
+# synchronous_standby_names = 'ANY 1 (standby1, standby2)'  (set via ALTER SYSTEM)
+#   => a commit waits for AT LEAST ONE of the two standbys to confirm the WAL.
+#   Kill ONE standby  -> the other confirms -> writes CONTINUE.
+#   Kill BOTH standbys -> no confirmation possible -> writes BLOCK.
+#
+# Distinct names/ports/network from the other POCs so all can run at once.
+# =====================================================================
+
+services:
+  spg-primary:
+    image: postgres:16-alpine
+    container_name: spg-primary
+    ports:
+      - "5452:5432"
+    environment:
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+      POSTGRES_DB: appdb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./postgres/primary/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/primary/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/primary/init:/docker-entrypoint-initdb.d:ro
+      - sprimary_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - semi-net
+
+  spg-standby1:
+    image: postgres:16-alpine
+    container_name: spg-standby1
+    ports:
+      - "5453:5432"
+    depends_on:
+      spg-primary:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/standby-entrypoint.sh"]
+    environment:
+      STANDBY_NAME: standby1
+      PRIMARY_HOST: spg-primary
+    volumes:
+      - ./postgres/standby/standby-entrypoint.sh:/standby-entrypoint.sh:ro
+      - sstandby1_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - semi-net
+
+  spg-standby2:
+    image: postgres:16-alpine
+    container_name: spg-standby2
+    ports:
+      - "5454:5432"
+    depends_on:
+      spg-primary:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/standby-entrypoint.sh"]
+    environment:
+      STANDBY_NAME: standby2
+      PRIMARY_HOST: spg-primary
+    volumes:
+      - ./postgres/standby/standby-entrypoint.sh:/standby-entrypoint.sh:ro
+      - sstandby2_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d appdb -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - semi-net
+
+  app:
+    build:
+      context: ./app
+      # Build with host networking so Maven can reach the internet even when the
+      # default build bridge network cannot.
+      network: host
+    container_name: semi-app
+    ports:
+      - "4002:4000"
+    depends_on:
+      spg-primary:
+        condition: service_healthy
+      spg-standby1:
+        condition: service_healthy
+      spg-standby2:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://spg-primary:5432/appdb
+      SPRING_DATASOURCE_USERNAME: app_user
+      SPRING_DATASOURCE_PASSWORD: app_password
+    networks:
+      - semi-net
+
+volumes:
+  sprimary_data:
+  sstandby1_data:
+  sstandby2_data:
+
+networks:
+  semi-net:
+    name: semi-net
